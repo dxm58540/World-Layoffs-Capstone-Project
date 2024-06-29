@@ -1,0 +1,194 @@
+---
+title: "World Layoffs"
+author: "David Madrid"
+date: "2024-06-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Business Task
+
+I wanted to look at the data from March 2020 to March 2023 and see how the world was dealing with layoffs and what industries were most affected by layoffs. 
+
+## Key Questions
+
+  1. What country was affected the most by layoffs?
+
+  2. What industries had the most layoffs?
+
+  3. What companies laid off the most people?
+
+## Data Cleaning 
+
+I used MySQL to do my data cleaning, first when opening this data set I wanted to work on removing any duplicate data. I started by creating a staging table in case anything went wrong I would still have my original table unaffected. I then created a second staging table that included row_num which I used to find duplicates. I then filtered the column I created called row_num by using the ROW_NUMBER(), OVER(PARTITON BY) which assigned a number to each row which I was then able to use DELETE and the WHERE clause to find anything that was greater than 1. 
+
+```{sql, eval=FALSE}
+CREATE TABLE `layoffs_staging2` (
+  `company` text,
+  `location` text,
+  `industry` text,
+  `total_laid_off` int DEFAULT NULL,
+  `percentage_laid_off` text,
+  `date` text,
+  `stage` text,
+  `country` text,
+  `funds_raised_millions` int DEFAULT NULL,
+  `row_num` INT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+SELECT *
+FROM layoffs_staging2
+WHERE row_num > 1;
+
+INSERT INTO layoffs_staging2
+SELECT *,
+ROW_NUMBER() OVER(
+PARTITION BY company, location,
+ industry, total_laid_off, percentage_laid_off, `date`, stage
+ , country, funds_raised_millions) AS row_num
+FROM layoffs_staging;
+
+
+
+DELETE
+FROM layoffs_staging2
+WHERE row_num > 1;
+```
+The next thing I wanted to do was remove any leading or trailing spaces by utilizing the TRIM() function.
+```{sql, eval=FALSE}
+SELECT company, TRIM(company)
+FROM layoffs_staging2;
+
+UPDATE layoffs_staging2
+SET company = TRIM(company);
+```
+This removed trailing spaces in my company names, I then had industries that had similar names that I changed to make the same so that they wouldn't be counted twice.
+```{sql, eval=FALSE}
+SELECT DISTINCT industry 
+FROM layoffs_staging2;
+
+UPDATE layoffs_staging2
+SET industry = 'Crypto'
+WHERE industry LIKE 'Crypto%';
+```
+I then noticed United States had a period at the end of it which made it show up twice, I used the TRIM function along with TRAILING to target the period specifically to make United States just one country and not two.
+```{sql, eval=FALSE}
+SELECT DISTINCT country, TRIM(TRAILING '.' FROM country)
+FROM layoffs_staging2
+ORDER BY 1;
+
+UPDATE layoffs_staging2
+SET country = TRIM(TRAILING '.' FROM country)
+WHERE country LIKE 'United States%';
+```
+I wanted to make the date a date and not text so that I could work with it in my exploratory data. To do this I used the str_to_date function in order to convert the date in mm/dd/YYYY format. I then altered the table to a date and not text.
+```{sql, eval=FALSE}
+SELECT `date`
+FROM layoffs_staging2;
+
+UPDATE layoffs_staging2
+SET `date` = str_to_date(`date` , '%m/%d/%Y');
+
+ALTER TABLE layoffs_staging2
+MODIFY COLUMN `date` DATE;
+```
+I then wanted to check for nulls and blanks, I did find some in my industry column so what I was able to do was create a join statement that looked at t2 that had the information that could be used for the t1 nulls. I ran into an issue here because some the fields I wanted to populate were blank and not null at all. What I did was change the blanks to a null value so that I could populate my blank fields.
+```{sql, eval=FALSE}
+SELECT t1.industry, t2.industry
+FROM layoffs_staging2 t1
+JOIN layoffs_staging2 t2
+	ON t1.company = t2.company
+WHERE (t1.industry is NULL OR t1.industry = ' ')
+AND t2.industry IS NOT NULL;
+
+
+UPDATE layoffs_staging2
+SET industry = NULL
+WHERE industry = '';
+
+
+UPDATE layoffs_staging2 t1
+JOIN layoffs_staging2 t2
+	ON t1.company = t2.company
+SET t1.industry = t2.industry 
+WHERE t1.industry is NULL
+AND t2.industry IS NOT NULL;
+```
+The last piece I focused on was where I had NULL values in both total_laid_off and percentage_laid_off because I will be using these fields in my analysis. I was confident in deleting these nulls because they didn't have any data I could use or that I could try to populate. I then dropped the row_num column because I would no longer need it.
+```{sql, eval=FALSE}
+SELECT *
+FROM layoffs_staging2
+WHERE total_laid_off IS NULL
+AND percentage_laid_off IS NULL;
+
+DELETE 
+FROM layoffs_staging2
+WHERE total_laid_off IS NULL
+AND percentage_laid_off IS NULL;
+
+
+ALTER TABLE layoffs_staging2
+DROP COLUMN row_num;
+```
+## Visualizations and Key Findings
+The first thing I wanted to look into was what country had the most layoffs? I was surprised to find out the United States had the most with 256,559 layoffs which is massive compared to number 2 on the list which was India at 35,993 followed by the Netherlands at 17,220.
+![NS](Countries with Most Layoffs.png)
+```{sql, eval=FALSE}
+SELECT country, SUM(total_laid_off)
+FROM layoffs_staging2
+GROUP BY country 
+ORDER BY 2 DESC;
+```
+Next I wanted to dig a little deeper so I chose to focus on what industries had the most layoffs? What I found out was the consumer industry was impacted the most with 46,682 layoffs followed by retail, other, transportation and finance. I started wondering maybe these industries had the most layoffs because of what was going on at the time. This data set looked at layoffs from 2020-2023, something big that had happened during that time was covid. This looks to correlate with the industries impacted. 
+
+How did covid impact the consumer industry? Covid could have impacted the industry because they sell products and services and at this time it made it hard to get what you needed to produce goods. Also people were only trying to buy what they needed because of the pandemic.
+
+When it comes to retail you would be going into stores and people didn't want to risk that when covid was high. Also we see another possible correlation between the previous consumer industry, since the consumer industry sells goods they more than likely provide these goods to retailers which at the time the consumer industry was having the most layoffs because they couldn't get what they needed to produce the goods or the demand was higher than the supply.
+
+Transportation can also be related to the restrictions that were put on travel because of covid. This made less people wanted to travel because they didn't want to risk getting covid. Also this affected moving products not just people which again goes back to the number one industry laying people off at the time consumer. 
+
+I want to say these are my assumptions and correlations that look to be true but without having the covid data attached to layoffs it's hard to say with certainty that was the cause.
+
+![NS](Industries with Most Layoffs.png)
+```{sql, eval=FALSE}
+SELECT industry, SUM(total_laid_off)
+FROM layoffs_staging2
+GROUP BY industry 
+ORDER BY 2 DESC;
+```
+Lastly I wanted to dig into what companies were laying off the most people? I found out that the top 6 companies all happen to be in the tech field (consumer). This hits close to home for me as I'm a computer science major and I can say the job market has been challenging in the tech sector. 
+
+People in the tech field may have heard of the FAANG companies which stands for Facebook(Meta), Apple, Amazon, Netflix and Google, these are the top tech companies to work for and as you can see by the data 3 of the 5 Amazon, Google and Meta(Facebook) had the most layoffs during that time.  
+
+I feel the way covid could have impacted even these big companies is because of what it did. It caused rising inflation and slow growth which in turn has had these companies looking at other ways of streamlining costs. It doesn't help that at the time they feared a recession would be coming which caused them to do these mass layoffs.
+![NS](Companies With Most Layoffs.png)
+```{sql, eval=FALSE}
+WITH Company_Year (company, total_laid_off) AS
+(
+SELECT company, SUM(total_laid_off)
+FROM layoffs_staging2
+GROUP BY company
+), Company_Year_Rank AS 
+(SELECT * , 
+DENSE_RANK () OVER ( ORDER BY total_laid_off DESC) AS Ranking
+FROM Company_Year
+)
+SELECT *
+FROM Company_Year_Rank
+WHERE Ranking <= 5;
+```
+## Summary
+In summary the United States was impacted the most by layoffs and the industries that were hit the hardest during this time was consumer, retail, other, transportation and finance. The companies that laid off the most people happened to be Amazon, Google, Meta, Microsoft, Philips and Salesforce.
+
+Again I feel that a lot of this can correlate to the fact covid changed a lot of things during this time. Without the covid data and how it impacted layoffs, I can only speak to what the data shows and that is the country that struggled the most along with the industries and companies. 
+
+## Reccomendations
+This is challenging to make recommendations here especially when it comes to layoffs but I will do my best to give some thoughts.
+
+A recommendation I would put forth is possibly furloughing employees if possible rather than outright laying off if it is a possibility. This would allow the employee to still have a job until the company can figure out how to get there revenue higher than expenses.
+
+My second recommendation goes along with my first and that is for companies to examine their budgets carefully to see if were spending where it's not needed. Then we can create a plan to make sure we can get rid of other things rather than our workforce. 
+
